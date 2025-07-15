@@ -6,58 +6,60 @@ BROWSER_EXTENSION_DIR := surfsense_browser_extension
 PIP := $(shell command -v pip3 || command -v pip)
 ARCH := $(shell uname -m)
 
+COLOR_GREEN=\033[0;32m
+COLOR_RED=\033[0;31m
+COLOR_BLUE=\033[0;34m
+END_COLOR=\033[0m
+
+# test:
+# echo "$(COLOR_GREEN)Test Passed$(END_COLOR)"
+
 .PHONY: \
-default \
+all \
 create-backend-env create-web-env ensure-uv ensure-pnpm approve-pnpm-builds \
 setup setup-backend setup-frontend \
 dev dev-backend dev-frontend \
+test-backend \
 install-pgvector ensure-postgres ensure-postgres-user ensure-db \
 db-init db-migrate db-reset \
 create-browser-extension-env setup-browser-extension build-browser-extension
 
 # Default
-default:
-	make db-init & \
-	make db-migrate & \
+all:
+	make db-init
 	make setup
 
 create-backend-env:
-	cd $(BACKEND_DIR) && \
-	cp .env.example .env
+	cd $(BACKEND_DIR) && cp .env.example .env
 
 create-web-env:
-	cd $(WEB_DIR) && \
-	cp .env.example .env
+	cd $(WEB_DIR) && cp .env.example .env
 
 ensure-uv:
-	@command -v uv >/dev/null 2>&1 && { \
-		echo "✅ uv already installed."; \
-	} || { \
-		echo "⚠️  uv not found. Attempting to install..."; \
+	@command -v uv >/dev/null 2>&1 && exit 0 || { \
+		echo "uv not found. Attempting to install..."; \
 		if command -v pipx >/dev/null 2>&1; then \
-			echo "📦 Installing uv using pipx..."; \
+			echo "Installing uv using pipx..."; \
 			pipx install uv; \
 		elif command -v pip3 >/dev/null 2>&1; then \
-			echo "📦 Installing uv using pip3 --user (fallback)..."; \
+			echo "Installing uv using pip3 --user (fallback)..."; \
 			pip3 install --user uv; \
-			echo "⚠️ Make sure ~/.local/bin is in your PATH."; \
+			echo "Make sure ~/.local/bin is in your PATH."; \
 		elif command -v pip >/dev/null 2>&1; then \
-			echo "📦 Installing uv using pip --user (fallback)..."; \
+			echo "Installing uv using pip --user (fallback)..."; \
 			pip install --user uv; \
-			echo "⚠️ Make sure ~/.local/bin is in your PATH."; \
+			echo "Make sure ~/.local/bin is in your PATH."; \
 		else \
-			echo "❌ Could not find pipx or pip. Please install uv manually."; \
+			echo "Could not find pipx or pip. Please install uv manually."; \
 			exit 1; \
 		fi; \
 	}
 
 ensure-pnpm:
-	@command -v pnpm >/dev/null 2>&1 && { \
-		echo "✅ pnpm is already installed."; \
-	} || { \
-		echo "📦 Installing pnpm globally with npm..."; \
+	@command -v pnpm >/dev/null 2>&1 && exit 0 || { \
+		echo "Installing pnpm globally with npm..."; \
 		npm install -g pnpm || { \
-			echo "❌ Failed to install pnpm. Please install it manually."; \
+			echo "Failed to install pnpm. Please install it manually."; \
 			exit 1; \
 		}; \
 	}
@@ -73,18 +75,39 @@ setup:
 
 # setup-backend - Set up Python environment and dependencies
 setup-backend: ensure-uv create-backend-env
-	@command -v uv >/dev/null 2>&1 || { echo "❌ uv still not found. Aborting."; exit 1; }
+	@command -v uv >/dev/null 2>&1 || { echo "uv not found. Aborting."; exit 1; }
 	cd $(BACKEND_DIR) && \
-	uv sync
+	uv sync && \
+	db-migrate
 
 # setup-frontend - Set up Next.js dependencies
 setup-frontend: create-web-env ensure-pnpm
 	cd $(WEB_DIR) && \
 	pnpm install
 
+
 # Development
+# check-setup - Ensure all required environments and files exist before running dev
+check-setup:
+	@if [ ! -f "$(BACKEND_DIR)/.venv/pyvenv.cfg" ]; then \
+		echo "Backend virtual environment not set up. Run \`make setup\` first."; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(BACKEND_DIR)/.env" ]; then \
+		echo "Backend .env file missing. Run \`make setup\`."; \
+		exit 1; \
+	fi
+	@if [ ! -d "$(WEB_DIR)/node_modules" ]; then \
+		echo "Frontend dependencies not installed. Run \`make setup\` first."; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(WEB_DIR)/.env" ]; then \
+		echo "Frontend .env file missing. Run \`make setup\`."; \
+		exit 1; \
+	fi
+
 # dev - Start all components in development mode
-dev:
+dev: check-setup
 	make dev-backend & \
 	make dev-frontend & \
 	wait
@@ -96,14 +119,23 @@ dev-backend:
 
 # dev-frontend - Start frontend server
 dev-frontend: ensure-pnpm
+	cd $(WEB_DIR) && \
 	pnpm run dev
 
-# dev-extension - Build extension in dev mode
-# Browser extension doesn't have a dev mode
-
 # Testing & Quality
-# @TODO test - Run all tests
+# test-backend - 
+test-backend:
+	cd $(BACKEND_DIR) && \
+	. .venv/bin/activate && \
+	uv run -m unittest discover -s app -t ..
+
+# test - Run all tests
+test:
+	make test-backend
+
 # @TODO lint - Run linting across all components
+
+
 # @TODO format - Format code according to project standards
 
 
@@ -133,26 +165,26 @@ install-pgvector:
 # Checks if Postgres is running by trying to connect to it
 ensure-postgres:
 	@pg_isready -h localhost >/dev/null 2>&1 || { \
-		echo "❌ Postgres is not running."; \
-		echo "➡️  Try: brew services start postgresql@17"; \
+		echo "Postgres is not running."; \
+		echo "Try: brew services start postgresql@17"; \
 		exit 1; \
 	}
-	@echo "✅ Postgres is running."
+	@echo "Postgres is running."
 
 # Checks if the 'postgres' role exists, creates it if missing
 ensure-postgres-user:
 	@psql -U postgres -h localhost -d postgres -tc "SELECT 1 FROM pg_roles WHERE rolname='postgres'" | grep -q 1 || { \
-		echo "⚠️  Role 'postgres' not found. Creating it..."; \
-		createuser -s postgres || { echo "❌ Failed to create role 'postgres'."; exit 1; }; \
+		echo "Role 'postgres' not found. Creating it..."; \
+		createuser -s postgres || { echo "Failed to create role 'postgres'."; exit 1; }; \
 	}
-	@echo "✅ Role 'postgres' exists."
+	@echo "Role 'postgres' exists."
 
 ensure-db:
 	@psql -U postgres -h localhost -tc "SELECT 1 FROM pg_database WHERE datname = 'surfsense'" | grep -q 1 || { \
-		echo "📦 Creating database 'surfsense'..."; \
+		echo "Creating database 'surfsense'..."; \
 		createdb -U postgres -h localhost surfsense; \
 	}
-	@echo "✅ Database 'surfsense' exists."
+	@echo "Database 'surfsense' exists."
 
 # Database
 # db-init - Initialize database and pgvector
@@ -166,22 +198,21 @@ db-migrate:
 
 # db-reset - Drop, recreate, and migrate the database (for development)
 db-reset:
-	@read -p "⚠️  This will DESTROY and recreate the 'surfsense' database. Are you sure? (y/N) " confirm && \
+	@read -p "This will DESTROY and recreate the 'surfsense' database. Are you sure? (y/N) " confirm && \
 	if [ "$$confirm" = "y" ] || [ "$$confirm" = "Y" ]; then \
 		psql -U postgres -h localhost -c "DROP DATABASE IF EXISTS surfsense WITH (FORCE);" && \
 		createdb -U postgres -h localhost surfsense && \
 		cd $(BACKEND_DIR) && \
 		alembic upgrade head && \
-		echo "✅ Database reset complete."; \
+		echo "Database reset complete."; \
 	else \
-		echo "❌ Aborted."; \
+		echo "Aborted."; \
 	fi
 
 # Browser Extension
 # Helpers
 create-browser-extension-env:
-	cd $(BROWSER_EXTENSION_DIR) && \
-	cp .env.example .env
+	cd $(BROWSER_EXTENSION_DIR) && cp .env.example .env
 
 # setup-browser-extension - Set up browser extension dependencies
 setup-browser-extension: create-browser-extension-env ensure-pnpm approve-pnpm-builds
@@ -205,7 +236,7 @@ build-browser-extension: ensure-pnpm approve-pnpm-builds
 
 # start-fresh - Clean up and reinitialize everything from scratch (manual setup only, no Docker)
 start-fresh:
-	@echo "🧹 Cleaning up all previous environments and dependencies..."
+	@echo "Cleaning up all previous environments and dependencies..."
 	rm -rf $(BACKEND_DIR)/.venv \
 		$(WEB_DIR)/node_modules \
 		$(BROWSER_EXTENSION_DIR)/node_modules \
@@ -215,10 +246,12 @@ start-fresh:
 		$(BACKEND_DIR)/.ruff_cache && \
 	find . -name "*.pyc" -delete
 
-	@echo "🧼 Removing .env files..."
+	@echo "Removing .env files..."
 	rm -f $(BACKEND_DIR)/.env \
 		$(WEB_DIR)/.env \
 		$(BROWSER_EXTENSION_DIR)/.env
 
-	@echo "🗃️  Dropping and recreating the database..."
+	@echo "Dropping and recreating the database..."
 	psql -U postgres -h localhost -c "DROP DATABASE IF EXISTS surfsense WITH (FORCE);"
+
+	@echo "$(COLOR_GREEN)Everything has been reset$(END_COLOR)"
